@@ -8,6 +8,7 @@ from agno.os import AgentOS
 from agno.models.google import Gemini
 from agno.db.postgres import PostgresDb
 from agno.memory import MemoryManager
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
@@ -148,7 +149,17 @@ agent_os = AgentOS(
 
 app = agent_os.get_app()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://crypto-intelligence-agent.vercel.app",
+        "http://localhost:3000",
+        "*" 
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 if __name__ == "__main__":
-    agent_os.serve(app="IntelligenceHub:app", reload=True)
-
-
+    agent_os.serve(app="IntelligenceHub:app", reload=True, host="0.0.0.0", port=int(os.getenv("PORT",1111)))
