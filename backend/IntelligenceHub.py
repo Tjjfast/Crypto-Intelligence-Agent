@@ -15,6 +15,7 @@ load_dotenv()
 NEWSAPI_API_KEY = os.getenv("NEWSAPI_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 NEON_DB_URL = os.getenv("NEON_DB_URL")
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
 storage = PostgresDb(db_url=NEON_DB_URL, memory_table="agent_memory")
 
@@ -34,7 +35,7 @@ def get_crypto_price(symbol: str) -> str:
     Returns:
         str: JSON string with price info.
     """
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol.lower()}&vs_currencies=usd"
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol.lower()}&vs_currencies=usd&x_cg_demo_api_key={COINGECKO_API_KEY}"
     try:
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
@@ -131,6 +132,7 @@ BEHAVIOR:
 """
 
 crypto_agent = Agent(
+    name="CryptoIntel",
     model=Gemini(id='gemini-2.5-flash', api_key=GOOGLE_API_KEY),
     instructions=instructions,
     tools=[get_crypto_price, get_crypto_news],
