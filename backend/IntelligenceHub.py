@@ -10,6 +10,7 @@ from agno.db.postgres import PostgresDb
 from agno.memory import MemoryManager
 from fastapi.middleware.cors import CORSMiddleware
 import feedparser
+import re
 
 load_dotenv()
 
@@ -17,7 +18,6 @@ NEWSAPI_API_KEY = os.getenv("NEWSAPI_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 NEON_DB_URL = os.getenv("NEON_DB_URL")
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
-CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY")
 
 storage = PostgresDb(db_url=NEON_DB_URL, memory_table="agent_memory")
 
@@ -54,15 +54,6 @@ def get_crypto_price(symbol: str) -> str:
     except Exception as e:
         return json.dumps({"error": f"Failed to fetch price for {symbol}: {str(e)}"})
 
-import os
-from datetime import datetime
-import json
-import requests
-import feedparser
-import re
-
-NEWSAPI_API_KEY = os.getenv("NEWSAPI_API_KEY")
-
 def get_crypto_news(symbol: str, num_stories: int = 3) -> str:
     """
     Fetch latest crypto news from multiple sources (Google News, NewsAPI, Bing News, and crypto feeds).
@@ -79,7 +70,6 @@ def get_crypto_news(symbol: str, num_stories: int = 3) -> str:
         f"{symbol} blockchain"
     ]
 
-    # ===== 1. Google News RSS =====
     try:
         for q in search_variants:
             if len(stories) >= num_stories:
@@ -126,7 +116,6 @@ def get_crypto_news(symbol: str, num_stories: int = 3) -> str:
     except Exception as e:
         pass
 
-    # ===== 2. NewsAPI fallback =====
     if len(stories) < num_stories and NEWSAPI_API_KEY:
         try:
             q = f"{symbol} cryptocurrency OR {symbol} crypto"
@@ -159,7 +148,6 @@ def get_crypto_news(symbol: str, num_stories: int = 3) -> str:
         except Exception as e:
             pass
 
-    # ===== 3. Bing News API (if Google/NewsAPI fail) =====
     if len(stories) < num_stories:
         try:
             bing_url = f"https://www.bing.com/news/search?q={symbol}+cryptocurrency&format=rss"
@@ -190,7 +178,6 @@ def get_crypto_news(symbol: str, num_stories: int = 3) -> str:
         except Exception as e:
             pass
 
-    # ===== 4. Crypto-specific RSS Feeds =====
     if len(stories) < num_stories:
         crypto_feeds = [
             "https://cointelegraph.com/rss",
@@ -235,7 +222,6 @@ def get_crypto_news(symbol: str, num_stories: int = 3) -> str:
             except Exception as e:
                 continue
 
-    # ===== Final Return =====
     if not stories:
         return json.dumps({
             "symbol": symbol.upper(),
