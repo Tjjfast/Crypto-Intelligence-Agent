@@ -245,6 +245,15 @@ TOOLS AVAILABLE:
 - get_crypto_price(symbol): Fetches current USD price from CoinGecko  
 - get_crypto_news(symbol, num_stories): Fetches recent news from NewsAPI and if failed, fall back to CryptoPanic
 
+WORKFLOW - FOLLOW EXACTLY:
+1. When user asks about a cryptocurrency:
+   a. Call get_crypto_price(symbol) ONCE
+   b. Call get_crypto_news(symbol, num_stories=3) ONCE
+   c. Format and present the complete response to the user
+   d. Call update_user_memory to store the price
+   e. DO NOT generate another response after updating memory
+2. After calling update_user_memory, your task is COMPLETE - do not respond again
+
 MEMORY BEHAVIOR:
 - You have persistent memory that automatically stores our conversation history
 - When you fetch price/news data, always remember the price and = ONLY THE PRICE for future reference
@@ -288,7 +297,7 @@ IMPORTANT:
 - Separate title, source, date, and description with " - "
 - Keep descriptions concise (around 200 characters max)
 - Never use ISO timestamp format in the output - always convert to readable dates
-
+- IMPORTANT: After you call update_user_memory, DO NOT generate another response
 """
 
 crypto_agent = Agent(
@@ -314,6 +323,7 @@ crypto_agent_pro = Agent(
     enable_user_memories=True,
     markdown=True,
     debug_mode=True,
+    stream=False,
 )
 agent_os = AgentOS(
     os_id="Crypto-Intelligence-Hub",
