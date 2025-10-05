@@ -9,6 +9,7 @@ from agno.models.google import Gemini
 from agno.db.postgres import PostgresDb
 from agno.memory import MemoryManager
 from fastapi.middleware.cors import CORSMiddleware
+import feedparser
 
 load_dotenv()
 
@@ -16,6 +17,7 @@ NEWSAPI_API_KEY = os.getenv("NEWSAPI_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 NEON_DB_URL = os.getenv("NEON_DB_URL")
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
+CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY")
 
 storage = PostgresDb(db_url=NEON_DB_URL, memory_table="agent_memory")
 
@@ -52,64 +54,210 @@ def get_crypto_price(symbol: str) -> str:
     except Exception as e:
         return json.dumps({"error": f"Failed to fetch price for {symbol}: {str(e)}"})
 
+import os
+from datetime import datetime
+import json
+import requests
+import feedparser
+import re
+
+NEWSAPI_API_KEY = os.getenv("NEWSAPI_API_KEY")
+
 def get_crypto_news(symbol: str, num_stories: int = 3) -> str:
     """
-    Fetch the latest news about a cryptocurrency from NewsAPI.
-
-    Args:
-        symbol (str): The name/id of the crypto (e.g., 'bitcoin', 'ethereum').
-        num_stories (int): Number of news stories to fetch.
-
-    Returns:
-        str: JSON string of news stories.
+    Fetch latest crypto news from multiple sources (Google News, NewsAPI, Bing News, and crypto feeds).
     """
-    if not NEWSAPI_API_KEY:
-        return json.dumps({"error": "No NewsAPI API key found in .env"})
+    stories = []
+    seen_urls = set()
+    clean_symbol = symbol.replace('-', ' ')
+    
+    search_variants = [
+        f"{clean_symbol} cryptocurrency",
+        f"{clean_symbol} crypto",
+        f"{symbol} coin",
+        f"{symbol} token",
+        f"{symbol} blockchain"
+    ]
 
-    search_query = f"{symbol} cryptocurrency OR {symbol} crypto OR {symbol} price"
-    
-    url = (
-        f"https://newsapi.org/v2/everything?"
-        f"q={search_query}&"
-        f"sortBy=publishedAt&"
-        f"pageSize={num_stories}&"
-        f"apiKey={NEWSAPI_API_KEY}"
-    )
-    
+    # ===== 1. Google News RSS =====
     try:
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            articles = data.get("articles", [])[:num_stories]
-            stories = []
-            for article in articles:
-                stories.append({
-                    "title": article.get("title", "No title"),
-                    "source": article.get("source", {}).get("name", "Unknown Source"),
-                    "url": article.get("url", ""),
-                    "published_at": article.get("publishedAt", ""),
-                    "description": article.get("description", "")[:200] + "..." if article.get("description") and len(article.get("description", "")) > 200 else article.get("description", "")
-                })
-            return json.dumps({
-                "symbol": symbol.upper(), 
-                "news": stories,
-                "timestamp": datetime.now().isoformat()
-            })
-        elif response.status_code == 426:
-            return json.dumps({"error": f"NewsAPI upgrade required. Status: {response.status_code}"})
-        elif response.status_code == 429:
-            return json.dumps({"error": f"NewsAPI rate limit exceeded. Status: {response.status_code}"})
-        else:
-            return json.dumps({"error": f"NewsAPI returned status {response.status_code} for {symbol}"})
+        for q in search_variants:
+            if len(stories) >= num_stories:
+                break
+
+            try:
+                feed = feedparser.parse(f'https://news.google.com/rss/search?q={q}&hl=en&gl=US&ceid=US:en')
+                
+                if not feed or not hasattr(feed, 'entries'):
+                    continue
+                
+                for entry in feed.entries[:num_stories * 2]:
+                    if len(stories) >= num_stories:
+                        break
+
+                    url = entry.get("link")
+                    if not url or url in seen_urls:
+                        continue
+
+                    title = entry.get("title", "No title")
+                    source = "Google News"
+                    if " - " in title:
+                        parts = title.rsplit(" - ", 1)
+                        if len(parts) == 2:
+                            title, source = parts
+
+                    desc = re.sub("<[^<]+?>", "", entry.get("summary", title))
+                    if len(desc) > 200:
+                        desc = desc[:200] + "..."
+                    
+                    stories.append({
+                        "title": title,
+                        "source": source,
+                        "url": url,
+                        "published_at": entry.get("published", ""),
+                        "description": desc
+                    })
+                    seen_urls.add(url)
+                
+                if stories:
+                    break
+            except Exception as e:
+                continue
     except Exception as e:
-        return json.dumps({"error": f"Failed to fetch news for {symbol}: {str(e)}"})
+        pass
+
+    # ===== 2. NewsAPI fallback =====
+    if len(stories) < num_stories and NEWSAPI_API_KEY:
+        try:
+            q = f"{symbol} cryptocurrency OR {symbol} crypto"
+            url = (f"https://newsapi.org/v2/everything?"
+                   f"q={q}&sortBy=publishedAt&language=en&pageSize=20&apiKey={NEWSAPI_API_KEY}")
+            
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                articles = resp.json().get("articles", [])
+                for art in articles:
+                    if len(stories) >= num_stories:
+                        break
+                    
+                    article_url = art.get("url")
+                    if not article_url or article_url in seen_urls:
+                        continue
+                    
+                    desc = art.get("description", "")
+                    if desc and len(desc) > 200:
+                        desc = desc[:200] + "..."
+                    
+                    stories.append({
+                        "title": art.get("title", "No title"),
+                        "source": art.get("source", {}).get("name", "NewsAPI"),
+                        "url": article_url,
+                        "published_at": art.get("publishedAt", ""),
+                        "description": desc if desc else ""
+                    })
+                    seen_urls.add(article_url)
+        except Exception as e:
+            pass
+
+    # ===== 3. Bing News API (if Google/NewsAPI fail) =====
+    if len(stories) < num_stories:
+        try:
+            bing_url = f"https://www.bing.com/news/search?q={symbol}+cryptocurrency&format=rss"
+            feed = feedparser.parse(bing_url)
+            
+            if feed and hasattr(feed, 'entries'):
+                for entry in feed.entries[:num_stories * 2]:
+                    if len(stories) >= num_stories:
+                        break
+                    
+                    url = entry.get("link")
+                    if not url or url in seen_urls:
+                        continue
+                    
+                    title = entry.get("title", "No title")
+                    desc = re.sub("<[^<]+?>", "", entry.get("summary", ""))
+                    if len(desc) > 200:
+                        desc = desc[:200] + "..."
+                    
+                    stories.append({
+                        "title": title,
+                        "source": "Bing News",
+                        "url": url,
+                        "published_at": entry.get("published", ""),
+                        "description": desc
+                    })
+                    seen_urls.add(url)
+        except Exception as e:
+            pass
+
+    # ===== 4. Crypto-specific RSS Feeds =====
+    if len(stories) < num_stories:
+        crypto_feeds = [
+            "https://cointelegraph.com/rss",
+            "https://news.bitcoin.com/feed/",
+            "https://cryptonews.net/en/news/feed/",
+            "https://www.coindesk.com/arc/outboundfeeds/rss/"
+        ]
+        
+        for feed_url in crypto_feeds:
+            if len(stories) >= num_stories:
+                break
+            
+            try:
+                feed = feedparser.parse(feed_url)
+                
+                if not feed or not hasattr(feed, 'entries'):
+                    continue
+                
+                for entry in feed.entries[:num_stories * 3]:
+                    if len(stories) >= num_stories:
+                        break
+                    
+                    entry_link = entry.get("link")
+                    if not entry_link or entry_link in seen_urls:
+                        continue
+                    
+                    text = f"{entry.get('title', '')} {entry.get('summary', '')}".lower()
+                    
+                    if symbol.lower() in text:
+                        desc = re.sub("<[^<]+?>", "", entry.get("summary", ""))
+                        if len(desc) > 200:
+                            desc = desc[:200] + "..."
+                        
+                        stories.append({
+                            "title": entry.get("title", "No title"),
+                            "source": "Crypto Feed",
+                            "url": entry_link,
+                            "published_at": entry.get("published", ""),
+                            "description": desc
+                        })
+                        seen_urls.add(entry_link)
+            except Exception as e:
+                continue
+
+    # ===== Final Return =====
+    if not stories:
+        return json.dumps({
+            "symbol": symbol.upper(),
+            "news": [],
+            "count": 0,
+            "message": f"No recent news found for {symbol}. It might have limited media coverage.",
+            "timestamp": datetime.now().isoformat()
+        })
+
+    return json.dumps({
+        "symbol": symbol.upper(),
+        "news": stories,
+        "count": len(stories),
+        "timestamp": datetime.now().isoformat()
+    })
 
 instructions = """
 You are a Crypto Intelligence Agent with persistent memory.
 
 TOOLS AVAILABLE:
 - get_crypto_price(symbol): Fetches current USD price from CoinGecko  
-- get_crypto_news(symbol, num_stories): Fetches recent news from NewsAPI
+- get_crypto_news(symbol, num_stories): Fetches recent news from NewsAPI and if failed, fall back to CryptoPanic
 
 MEMORY BEHAVIOR:
 - You have persistent memory that automatically stores our conversation history
@@ -129,6 +277,32 @@ BEHAVIOR:
 - When asked about historical data, recall from your memory
 - Always fetch fresh data unless specifically asked for stored data only
 - Never provide financial advice - only factual market information
+
+### When presenting cryptocurrency price and news information, you MUST follow this exact format:
+
+For first-time checks:
+"This is the first time I've checked [Crypto Name]. The current price of [Crypto Name] is $[price] USD as of [readable date and time]."
+
+For subsequent checks:
+"I've checked [Crypto Name] for you. The current price of [Crypto Name] is $[price] USD as of [readable date and time].
+I previously noted the price of [Crypto Name] was $[previous price] USD at [previous date and time]. The price has [increased/decreased/remained stable] since then."
+
+NEWS SECTION FORMAT:
+
+If news is available:
+"Here are [number] recent news stories about [Crypto Name]:
+* **[Article Title]** ([Source]) - [Readable Date] - [Description]
+* **[Article Title]** ([Source]) - [Readable Date] - [Description]
+* **[Article Title]** ([Source]) - [Readable Date] - [Description]"
+
+IMPORTANT:
+- Always use bullet points (*) for news items
+- Bold the article titles using **title**
+- Include source in parentheses
+- Separate title, source, date, and description with " - "
+- Keep descriptions concise (around 200 characters max)
+- Never use ISO timestamp format in the output - always convert to readable dates
+
 """
 
 crypto_agent = Agent(
@@ -143,10 +317,21 @@ crypto_agent = Agent(
     markdown=True,
     debug_mode=True,
 )
-
+crypto_agent_pro = Agent(
+    name="CryptoIntelPro",
+    model=Gemini(id='gemini-2.5-pro', api_key=GOOGLE_API_KEY),
+    instructions=instructions,
+    tools=[get_crypto_price, get_crypto_news],
+    memory_manager=memory_manager,
+    db=storage,
+    enable_agentic_memory=True,
+    enable_user_memories=True,
+    markdown=True,
+    debug_mode=True,
+)
 agent_os = AgentOS(
     os_id="Crypto-Intelligence-Hub",
-    agents=[crypto_agent],
+    agents=[crypto_agent, crypto_agent_pro],
 )
 
 app = agent_os.get_app()
