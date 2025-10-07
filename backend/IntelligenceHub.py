@@ -30,29 +30,114 @@ memory_manager = MemoryManager(
 def get_crypto_price(symbol: str) -> str:
     """
     Fetch the latest USD price of a cryptocurrency from CoinGecko.
-
     Args:
-        symbol (str): The name/id of the crypto (e.g., 'bitcoin', 'ethereum').
-
+        symbol (str): The name/id of the crypto (e.g., 'bitcoin', 'ethereum', 'pi-network').
     Returns:
         str: JSON string with price info.
     """
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol.lower()}&vs_currencies=usd&x_cg_demo_api_key={COINGECKO_API_KEY}"
+    
+    # Common symbol variations/mappings
+    symbol_mappings = {
+        'btc': 'bitcoin',
+        'eth': 'ethereum',
+        'bnb': 'binancecoin',
+        'xrp': 'ripple',
+        'ada': 'cardano',
+        'doge': 'dogecoin',
+        'sol': 'solana',
+        'dot': 'polkadot',
+        'matic': 'matic-network',
+        'shib': 'shiba-inu',
+        'avax': 'avalanche-2',
+        'pi': 'pi-network',
+        'trx': 'tron',
+        'link': 'chainlink',
+        'atom': 'cosmos',
+        'uni': 'uniswap',
+        'etc': 'ethereum-classic',
+        'ltc': 'litecoin',
+        'bch': 'bitcoin-cash',
+        'xlm': 'stellar',
+        'algo': 'algorand',
+    }
+    
+    # Normalize symbol
+    original_symbol = symbol
+    symbol_lower = symbol.lower().strip()
+    
+    # Try mapped ID first
+    if symbol_lower in symbol_mappings:
+        symbol_lower = symbol_mappings[symbol_lower]
+    
+    # Try variations
+    symbol_variations = [
+        symbol_lower,
+        symbol_lower.replace(' ', '-'),
+        symbol_lower.replace('-', ''),
+        symbol_lower + '-network' if 'network' not in symbol_lower else symbol_lower,
+    ]
+    
+    # Remove duplicates while preserving order
+    symbol_variations = list(dict.fromkeys(symbol_variations))
+    
+    # Try each variation
+    for symbol_id in symbol_variations:
+        try:
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol_id}&vs_currencies=usd&x_cg_demo_api_key={COINGECKO_API_KEY}"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                price = data.get(symbol_id, {}).get("usd")
+                
+                if price:
+                    return json.dumps({
+                        "symbol": original_symbol.upper(),
+                        "price_usd": price,
+                        "coingecko_id": symbol_id,
+                        "timestamp": datetime.now().isoformat()
+                    })
+        except Exception:
+            continue
+    
+    # If all variations fail, try searching for the coin
     try:
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            price = data.get(symbol.lower(), {}).get("usd")
-            if price:
-                return json.dumps({
-                    "symbol": symbol.upper(), 
-                    "price_usd": price,
-                    "timestamp": datetime.now().isoformat()
-                })
-            return json.dumps({"error": f"Price not found for {symbol}"})
-        return json.dumps({"error": f"API returned status {response.status_code} for {symbol}"})
+        search_url = f"https://api.coingecko.com/api/v3/search?query={original_symbol}&x_cg_demo_api_key={COINGECKO_API_KEY}"
+        search_response = requests.get(search_url, timeout=10)
+        
+        if search_response.status_code == 200:
+            search_data = search_response.json()
+            coins = search_data.get("coins", [])
+            
+            if coins:
+                # Get the first match
+                coin_id = coins[0].get("id")
+                coin_name = coins[0].get("name")
+                
+                # Now fetch the price with the correct ID
+                price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&x_cg_demo_api_key={COINGECKO_API_KEY}"
+                price_response = requests.get(price_url, timeout=10)
+                
+                if price_response.status_code == 200:
+                    price_data = price_response.json()
+                    price = price_data.get(coin_id, {}).get("usd")
+                    
+                    if price:
+                        return json.dumps({
+                            "symbol": coin_name,
+                            "price_usd": price,
+                            "coingecko_id": coin_id,
+                            "timestamp": datetime.now().isoformat()
+                        })
     except Exception as e:
-        return json.dumps({"error": f"Failed to fetch price for {symbol}: {str(e)}"})
+        pass
+    
+    # If everything fails, return error with suggestions
+    return json.dumps({
+        "error": f"Could not find price for '{original_symbol}'. Please try using the full CoinGecko ID (e.g., 'bitcoin', 'ethereum', 'pi-network').",
+        "tried_variations": symbol_variations[:3],
+        "suggestion": "You can search for the correct ID at https://www.coingecko.com/"
+    })
 
 def get_crypto_news(symbol: str, num_stories: int = 3) -> str:
     """
@@ -243,23 +328,19 @@ You are a Crypto Intelligence Agent with persistent memory.
 
 TOOLS AVAILABLE:
 - get_crypto_price(symbol): Fetches current USD price from CoinGecko  
-- get_crypto_news(symbol, num_stories): Fetches recent news from NewsAPI and if failed, fall back to CryptoPanic
+- get_crypto_news(symbol, num_stories): Fetches recent news from Google News, NewsAPI, Bing News, and crypto feeds
 
-WORKFLOW - FOLLOW EXACTLY:
-1. When user asks about a cryptocurrency:
-   a. Call get_crypto_price(symbol) ONCE
-   b. Call get_crypto_news(symbol, num_stories=3) ONCE
-   c. Format and present the complete response to the user
-   d. Call update_user_memory to store the price
-   e. DO NOT generate another response after updating memory
-2. After calling update_user_memory, your task is COMPLETE - do not respond again
+WORKFLOW:
+1. Call get_crypto_price(symbol) once
+2. Call get_crypto_news(symbol, num_stories=3) once
+3. Format and present the COMPLETE response to the user with price and news
+4. That's it - do not add any additional commentary after presenting the information
 
 MEMORY BEHAVIOR:
-- You have persistent memory that automatically stores our conversation history
-- When you fetch price/news data, always remember the price and = ONLY THE PRICE for future reference
-- Before fetching new data, check if you have any past prices about that crypto
-- Always compare new prices with any previous prices you remember
-- If you have previous data, mention the comparison (price change, time elapsed)
+- Before fetching new data, check if you have past prices for that crypto
+- Always compare new prices with previous prices if available
+- Your memory system automatically stores conversation history
+- When you fetch price data, the system will remember it for future reference
 
 RESPONSE FORMAT:
 - Always fetch and provide both current price and 3 recent news stories
@@ -267,42 +348,35 @@ RESPONSE FORMAT:
 - Keep responses concise but informative
 - Include relevant timestamps
 
-BEHAVIOR:
-- Remember all crypto data you've fetched across sessions
-- When asked about historical data, recall from your memory
-- Always fetch fresh data unless specifically asked for stored data only
-- Never provide financial advice - only factual market information
-
-### When presenting cryptocurrency price and news information, you MUST follow this exact format:
+### Response Format:
 
 For first-time checks:
-"This is the first time I've checked [Crypto Name]. The current price of [Crypto Name] is $[price] USD as of [readable date and time]."
+"This is the first time I've checked [Crypto Name]. The current price is $[price] USD as of [readable date and time]."
 
 For subsequent checks:
-"I've checked [Crypto Name] for you. The current price of [Crypto Name] is $[price] USD as of [readable date and time].
-I previously noted the price of [Crypto Name] was $[previous price] USD at [previous date and time]. The price has [increased/decreased/remained stable] since then."
+"The current price of [Crypto Name] is $[price] USD as of [readable date and time].
+Previously it was $[previous price] at [previous date and time]. The price has [increased/decreased/remained stable]."
 
-NEWS SECTION FORMAT:
-
-If news is available:
+NEWS SECTION:
 "Here are [number] recent news stories about [Crypto Name]:
 * **[Article Title]** ([Source]) - [Readable Date] - [Description]
 * **[Article Title]** ([Source]) - [Readable Date] - [Description]
 * **[Article Title]** ([Source]) - [Readable Date] - [Description]"
 
 IMPORTANT:
-- Always use bullet points (*) for news items
-- Bold the article titles using **title**
-- Include source in parentheses
-- Separate title, source, date, and description with " - "
-- Keep descriptions concise (around 200 characters max)
-- Never use ISO timestamp format in the output - always convert to readable dates
-- IMPORTANT: After you call update_user_memory, DO NOT generate another response
+- Use bullet points (*) for news items
+- Bold article titles with **title**
+- Never use ISO timestamps in output - convert to readable dates
+- After presenting price and news, your task is complete
+After presenting the price and news, output exactly:
+---END---
+
+Do not generate any text after ---END---
 """
 
 crypto_agent = Agent(
     name="CryptoIntel",
-    model=Gemini(id='gemini-2.5-flash', api_key=GOOGLE_API_KEY),
+    model=Gemini(id='gemini-2.5-flash', api_key=GOOGLE_API_KEY, stop_sequences=["---END---", "\n\nIs there"],),
     instructions=instructions,
     tools=[get_crypto_price, get_crypto_news],
     memory_manager=memory_manager,
@@ -311,10 +385,17 @@ crypto_agent = Agent(
     enable_user_memories=True,
     markdown=True,
     debug_mode=True,
+    stream=False,
 )
 crypto_agent_pro = Agent(
     name="CryptoIntelPro",
-    model=Gemini(id='gemini-2.5-pro', api_key=GOOGLE_API_KEY),
+    model=Gemini(
+        id='gemini-2.5-pro', 
+        api_key=GOOGLE_API_KEY,
+        temperature=0.1, 
+        top_p=0.8,
+        stop_sequences=["---END---", "\n\nIs there"],
+    ),
     instructions=instructions,
     tools=[get_crypto_price, get_crypto_news],
     memory_manager=memory_manager,
@@ -327,7 +408,7 @@ crypto_agent_pro = Agent(
 )
 agent_os = AgentOS(
     os_id="Crypto-Intelligence-Hub",
-    agents=[crypto_agent, crypto_agent_pro],
+    agents=[crypto_agent,crypto_agent_pro],
 )
 
 app = agent_os.get_app()
